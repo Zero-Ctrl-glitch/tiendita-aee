@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex">
+  <title>Tiendita AEE - Administración</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="top">
+    <h1>🛠️ <span id="tituloTienda">Tiendita AEE</span> · Admin</h1>
+    <div class="user hidden" id="userBox">
+      <button class="btn ghost" onclick="cargar()">↻ Actualizar</button>
+      <button class="btn ghost" onclick="salir()">Salir</button>
+    </div>
+  </header>
+
+  <section class="login-wrap" id="vistaLogin">
+    <form class="card login" onsubmit="entrar(event)">
+      <h2>Panel de administradores</h2>
+      <p>Ingresa la clave de administrador.</p>
+      <label for="clave">Clave</label>
+      <input id="clave" type="password" required autocomplete="current-password">
+      <button class="btn full" id="btnEntrar" type="submit">Entrar</button>
+    </form>
+  </section>
+
+  <main class="hidden" id="vistaAdmin">
+    <div class="stats" id="stats"></div>
+
+    <div class="tabs">
+      <button class="act" data-tab="pedidos" onclick="tab('pedidos')">📋 Pedidos</button>
+      <button data-tab="stock" onclick="tab('stock')">📦 Stock</button>
+    </div>
+
+    <!-- PEDIDOS -->
+    <div class="card" id="tabPedidos">
+      <div class="toolbar">
+        <input id="buscarPedido" type="search" placeholder="Buscar por nombre, código, ID o componente..." oninput="renderPedidos()">
+        <select id="filtroEstado" onchange="renderPedidos()" style="width:auto">
+          <option value="">Todos los estados</option>
+          <option>Pendiente</option>
+          <option>Entregado</option>
+          <option>Cancelado</option>
+        </select>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Pedido</th><th>Comprador</th><th>Componentes</th><th class="num">Monto</th><th>Estado</th></tr>
+          </thead>
+          <tbody id="tablaPedidos"></tbody>
+        </table>
+      </div>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:0">Al marcar un pedido como <b>Cancelado</b>, sus componentes regresan automáticamente al stock.</p>
+    </div>
+
+    <!-- STOCK -->
+    <div class="card hidden" id="tabStock">
+      <form class="add-form" onsubmit="agregar(event)">
+        <div class="full-row"><label>Nuevo componente</label><input id="nNombre" placeholder="Nombre del componente" required></div>
+        <div><label>Cantidad</label><input id="nStock" type="number" min="0" step="any" value="0" required></div>
+        <div><label>Precio (S/.)</label><input id="nPrecio" type="number" min="0" step="0.01" value="0" required></div>
+        <div class="full-row"><button class="btn" type="submit">+ Agregar</button></div>
+      </form>
+      <div class="toolbar">
+        <input id="buscarStock" type="search" placeholder="Buscar componente..." oninput="renderStock()">
+        <label class="chk"><input type="checkbox" id="soloSinStock" onchange="renderStock()"> Solo sin stock</label>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Componente</th><th class="num">Cantidad</th><th class="num">Precio (S/.)</th><th class="num">Acciones</th></tr>
+          </thead>
+          <tbody id="tablaStock"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="estado" class="loader hidden"><div class="spin"></div>Cargando...</div>
+  </main>
+
+  <script src="config.js"></script>
+  <script>
+    let CLAVE = '';
+    let ITEMS = [];
+    let PEDIDOS = [];
+
+    document.getElementById('tituloTienda').textContent = TIENDITA_CONFIG.NOMBRE;
+
+    try {
+      const c = sessionStorage.getItem('tiendita_admin');
+      if (c) { CLAVE = c; mostrar(); }
+    } catch (e) {}
+
+    async function entrar(ev) {
+      ev.preventDefault();
+      const b = document.getElementById('btnEntrar');
+      b.disabled = true;
+      try {
+        CLAVE = document.getElementById('clave').value;
+        await api('adminLogin', { clave: CLAVE });
+        try { sessionStorage.setItem('tiendita_admin', CLAVE); } catch (e) {}
+        mostrar();
+      } catch (e) {
+        toast(e.message, 'error');
+      }
+      b.disabled = false;
+    }
+
+    function mostrar() {
+      document.getElementById('vistaLogin').classList.add('hidden');
+      document.getElementById('vistaAdmin').classList.remove('hidden');
+      document.getElementById('userBox').classList.remove('hidden');
+      cargar();
+    }
+
+    function salir() {
+      try { sessionStorage.removeItem('tiendita_admin'); } catch (e) {}
+      location.reload();
+    }
+
+    function tab(t) {
+      document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('act', b.dataset.tab === t));
+      document.getElementById('tabPedidos').classList.toggle('hidden', t !== 'pedidos');
+      document.getElementById('tabStock').classList.toggle('hidden', t !== 'stock');
+    }
+
+    async function cargar() {
+      const est = document.getElementById('estado');
+      est.classList.remove('hidden');
+      try {
+        const r = await api('adminData', { clave: CLAVE });
+        ITEMS = r.items;
+        PEDIDOS = r.pedidos;
+        renderStats();
+        renderPedidos();
+        renderStock();
+      } catch (e) {
+        toast(e.message, 'error');
+        if (/clave/i.test(e.message)) setTimeout(salir, 1500);
+      }
+      est.classList.add('hidden');
+    }
+
+    function renderStats() {
+      const pend = PEDIDOS.filter(p => p.estado === 'Pendiente');
+      const entr = PEDIDOS.filter(p => p.estado === 'Entregado');
+      const sum = a => a.reduce((s, p) => s + p.total, 0);
+      const sinStock = ITEMS.filter(i => Math.floor(i.stock) <= 0).length;
+      document.getElementById('stats').innerHTML = `
+        <div class="stat"><div class="v">${pend.length}</div><div class="l">Pedidos pendientes</div></div>
+        <div class="stat"><div class="v">${soles(sum(pend))}</div><div class="l">Por cobrar</div></div>
+        <div class="stat"><div class="v">${soles(sum(entr))}</div><div class="l">Entregado / cobrado</div></div>
+        <div class="stat"><div class="v">${ITEMS.length}</div><div class="l">Componentes (${sinStock} sin stock)</div></div>`;
+    }
+
+    // ------------------- PEDIDOS -------------------
+    function renderPedidos() {
+      const q = sinTildes(document.getElementById('buscarPedido').value);
+      const f = document.getElementById('filtroEstado').value;
+      const lista = PEDIDOS.filter(p => (!f || p.estado === f) &&
+        (!q || sinTildes([p.id, p.nombre, p.codigo, p.pedido].join(' ')).includes(q)));
+      const tb = document.getElementById('tablaPedidos');
+      if (!lista.length) { tb.innerHTML = '<tr><td colspan="5" class="vacio">No hay pedidos.</td></tr>'; return; }
+      tb.innerHTML = lista.map(p => `
+        <tr>
+          <td><b>${esc(p.id)}</b><br><span style="font-size:12px;color:var(--muted)">${esc(p.fecha)}</span></td>
+          <td>${esc(p.nombre)}<br><span style="font-size:12px;color:var(--muted)">Código: ${esc(p.codigo)}</span></td>
+          <td class="pedido-items">${esc(p.pedido)}</td>
+          <td class="num"><b>${soles(p.total)}</b></td>
+          <td>
+            <span class="badge ${esc(p.estado)}">${esc(p.estado)}</span><br>
+            <select style="margin-top:6px;padding:5px;font-size:13px;width:auto" onchange="estado('${esc(p.id)}', this)">
+              ${['Pendiente', 'Entregado', 'Cancelado'].map(e => `<option ${e === p.estado ? 'selected' : ''}>${e}</option>`).join('')}
+            </select>
+          </td>
+        </tr>`).join('');
+    }
+
+    async function estado(id, sel) {
+      const nuevo = sel.value;
+      const p = PEDIDOS.find(x => x.id === id);
+      const msg = nuevo === 'Cancelado'
+        ? '¿Cancelar el pedido ' + id + '? Los componentes regresarán al stock.'
+        : p.estado === 'Cancelado'
+          ? '¿Reactivar el pedido ' + id + '? Se volverán a descontar los componentes del stock.'
+          : '¿Marcar el pedido ' + id + ' como ' + nuevo + '?';
+      if (!confirm(msg)) { sel.value = p.estado; return; }
+      sel.disabled = true;
+      try {
+        await api('estadoPedido', { clave: CLAVE, id: id, estado: nuevo });
+        toast('Pedido actualizado', 'ok');
+        cargar();
+      } catch (e) {
+        toast(e.message, 'error');
+        sel.value = p.estado;
+        sel.disabled = false;
+      }
+    }
+
+    // ------------------- STOCK -------------------
+    function renderStock() {
+      const q = sinTildes(document.getElementById('buscarStock').value).split(/\s+/).filter(Boolean);
+      const solo = document.getElementById('soloSinStock').checked;
+      const lista = ITEMS.filter(i => (!solo || Math.floor(i.stock) <= 0) && q.every(p => sinTildes(i.nombre).includes(p)));
+      const tb = document.getElementById('tablaStock');
+      if (!lista.length) { tb.innerHTML = '<tr><td colspan="4" class="vacio">Sin resultados.</td></tr>'; return; }
+      tb.innerHTML = lista.map(i => `
+        <tr id="r${i.fila}">
+          <td><input class="edit-name" value="${esc(i.nombre)}" oninput="marcar(${i.fila})"></td>
+          <td class="num"><input class="edit-num" type="number" min="0" step="any" value="${i.stock}" oninput="marcar(${i.fila})"></td>
+          <td class="num"><input class="edit-num" type="number" min="0" step="0.01" value="${i.precio.toFixed(2)}" oninput="marcar(${i.fila})"></td>
+          <td class="num" style="white-space:nowrap">
+            <button class="btn sm ok" onclick="guardar(${i.fila})">Guardar</button>
+            <button class="btn sm danger" onclick="eliminar(${i.fila})" title="Eliminar">🗑</button>
+          </td>
+        </tr>`).join('');
+    }
+
+    function marcar(fila) {
+      document.getElementById('r' + fila).classList.add('cambiado');
+    }
+
+    async function guardar(fila) {
+      const it = ITEMS.find(i => i.fila === fila);
+      const inputs = document.querySelectorAll('#r' + fila + ' input');
+      try {
+        await api('actualizarItem', {
+          clave: CLAVE, fila: fila, nombre: it.nombre,
+          nuevoNombre: inputs[0].value, stock: inputs[1].value, precio: inputs[2].value
+        });
+        toast('Guardado: ' + inputs[0].value, 'ok');
+        cargar();
+      } catch (e) { toast(e.message, 'error'); }
+    }
+
+    async function eliminar(fila) {
+      const it = ITEMS.find(i => i.fila === fila);
+      if (!confirm('¿Eliminar "' + it.nombre + '" del inventario? Esta acción borra la fila del Excel.')) return;
+      try {
+        await api('eliminarItem', { clave: CLAVE, fila: fila, nombre: it.nombre });
+        toast('Eliminado', 'ok');
+        cargar();
+      } catch (e) { toast(e.message, 'error'); }
+    }
+
+    async function agregar(ev) {
+      ev.preventDefault();
+      try {
+        await api('agregarItem', {
+          clave: CLAVE,
+          nombre: document.getElementById('nNombre').value,
+          stock: document.getElementById('nStock').value,
+          precio: document.getElementById('nPrecio').value
+        });
+        toast('Componente agregado', 'ok');
+        ev.target.reset();
+        cargar();
+      } catch (e) { toast(e.message, 'error'); }
+    }
+  </script>
+</body>
+</html>

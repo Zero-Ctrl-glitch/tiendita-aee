@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tiendita AEE - Reserva de componentes</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="top">
+    <h1>🔌 <span id="tituloTienda">Tiendita AEE</span></h1>
+    <div class="user hidden" id="userBox">
+      <span id="userInfo"></span>
+      <button class="btn ghost" onclick="salir()">Salir</button>
+    </div>
+  </header>
+
+  <!-- LOGIN -->
+  <section class="login-wrap" id="vistaLogin">
+    <form class="card login" onsubmit="entrar(event)">
+      <h2>Reserva de componentes</h2>
+      <p>Ingresa tus datos para ver el stock disponible y separar tus componentes.</p>
+      <label for="nombre">Nombre completo</label>
+      <input id="nombre" required autocomplete="name" placeholder="Ej. Juan Pérez">
+      <label for="codigo">Código</label>
+      <input id="codigo" required placeholder="Ej. 20231234">
+      <button class="btn full" type="submit">Ingresar</button>
+    </form>
+  </section>
+
+  <!-- TIENDA -->
+  <main class="hidden" id="vistaTienda">
+    <div class="aviso">ℹ️ Esta página es solo para <b>separar</b> componentes. El pago se realiza al momento de recoger tu pedido.</div>
+    <div class="card">
+      <div class="toolbar">
+        <input id="buscar" type="search" placeholder="Buscar componente (ej. resistencia 10k, LED, ESP32)..." oninput="render()">
+        <label class="chk"><input type="checkbox" id="soloStock" onchange="render()"> Solo con stock</label>
+        <button class="btn light sm" onclick="cargarStock()">↻ Actualizar</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Componente</th>
+              <th class="num">Stock</th>
+              <th class="num col-precio-unit">Precio c/u</th>
+              <th class="num">Cantidad</th>
+              <th class="num">Subtotal</th>
+            </tr>
+          </thead>
+          <tbody id="tabla"></tbody>
+        </table>
+      </div>
+      <div id="estado" class="loader"><div class="spin"></div>Cargando stock...</div>
+    </div>
+  </main>
+
+  <!-- BARRA DEL CARRITO -->
+  <div class="cart-bar hidden" id="cartBar">
+    <div class="inner">
+      <div>
+        <div class="sub" id="cartCount">0 componentes</div>
+        <div class="total">Total: <span id="cartTotal">S/. 0.00</span></div>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn light" onclick="vaciar()" id="btnVaciar" disabled>Vaciar</button>
+        <button class="btn ok" onclick="abrirConfirmar()" id="btnReservar" disabled>Reservar 🛒</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL CONFIRMAR -->
+  <div class="modal-bg" id="modal">
+    <div class="modal">
+      <div id="modalContenido"></div>
+    </div>
+  </div>
+
+  <script src="config.js"></script>
+  <script>
+    let ITEMS = [];
+    let CARRITO = {}; // fila -> cantidad
+    let USUARIO = null;
+
+    document.getElementById('tituloTienda').textContent = TIENDITA_CONFIG.NOMBRE;
+
+    // Restaurar sesión
+    try {
+      const u = JSON.parse(sessionStorage.getItem('tiendita_user') || 'null');
+      if (u && u.nombre && u.codigo) iniciar(u);
+    } catch (e) {}
+
+    function entrar(ev) {
+      ev.preventDefault();
+      const u = { nombre: document.getElementById('nombre').value.trim(), codigo: document.getElementById('codigo').value.trim() };
+      if (!u.nombre || !u.codigo) return;
+      try { sessionStorage.setItem('tiendita_user', JSON.stringify(u)); } catch (e) {}
+      iniciar(u);
+    }
+
+    function iniciar(u) {
+      USUARIO = u;
+      document.getElementById('userInfo').textContent = '👤 ' + u.nombre + ' · ' + u.codigo;
+      document.getElementById('userBox').classList.remove('hidden');
+      document.getElementById('vistaLogin').classList.add('hidden');
+      document.getElementById('vistaTienda').classList.remove('hidden');
+      document.getElementById('cartBar').classList.remove('hidden');
+      cargarStock();
+    }
+
+    function salir() {
+      if (Object.keys(CARRITO).length && !confirm('Tienes componentes en tu carrito sin reservar. ¿Salir de todas formas?')) return;
+      try { sessionStorage.removeItem('tiendita_user'); } catch (e) {}
+      location.reload();
+    }
+
+    async function cargarStock() {
+      const est = document.getElementById('estado');
+      est.className = 'loader';
+      est.innerHTML = '<div class="spin"></div>Cargando stock...';
+      est.classList.remove('hidden');
+      try {
+        const r = await api('stock');
+        ITEMS = r.items;
+        // Ajustar carrito si el stock cambió
+        Object.keys(CARRITO).forEach(f => {
+          const it = ITEMS.find(i => String(i.fila) === f);
+          const max = it ? Math.floor(it.stock) : 0;
+          if (CARRITO[f] > max) CARRITO[f] = max;
+          if (!CARRITO[f]) delete CARRITO[f];
+        });
+        est.classList.add('hidden');
+        render();
+      } catch (e) {
+        est.className = 'vacio';
+        est.innerHTML = '⚠️ No se pudo cargar el stock: ' + esc(e.message);
+      }
+    }
+
+    function render() {
+      const q = sinTildes(document.getElementById('buscar').value).split(/\s+/).filter(Boolean);
+      const solo = document.getElementById('soloStock').checked;
+      const filas = ITEMS.filter(it => {
+        if (solo && Math.floor(it.stock) <= 0) return false;
+        const n = sinTildes(it.nombre);
+        return q.every(p => n.includes(p));
+      });
+      const tb = document.getElementById('tabla');
+      if (!filas.length) {
+        tb.innerHTML = '<tr><td colspan="5" class="vacio">No se encontraron componentes.</td></tr>';
+      } else {
+        tb.innerHTML = filas.map(it => {
+          const max = Math.floor(it.stock);
+          const cant = CARRITO[it.fila] || 0;
+          const hay = max > 0;
+          return `<tr class="${hay ? '' : 'sin-stock'} ${cant ? 'en-carrito' : ''}">
+            <td>${esc(it.nombre)}</td>
+            <td class="num">${hay ? '<span class="badge si">' + max + '</span>' : '<span class="badge no">No hay stock</span>'}</td>
+            <td class="num col-precio-unit">${soles(it.precio)}</td>
+            <td class="num">
+              <div class="qty">
+                <button type="button" onclick="cambiar(${it.fila},-1)" ${!hay || !cant ? 'disabled' : ''} aria-label="Quitar">−</button>
+                <input type="number" min="0" max="${max}" value="${cant}" ${hay ? '' : 'disabled'}
+                       onchange="fijar(${it.fila}, this.value)" aria-label="Cantidad de ${esc(it.nombre)}">
+                <button type="button" onclick="cambiar(${it.fila},1)" ${!hay || cant >= max ? 'disabled' : ''} aria-label="Agregar">+</button>
+              </div>
+            </td>
+            <td class="num">${cant ? soles(cant * it.precio) : '—'}</td>
+          </tr>`;
+        }).join('');
+      }
+      actualizarCarrito();
+    }
+
+    function cambiar(fila, d) {
+      fijar(fila, (CARRITO[fila] || 0) + d);
+    }
+
+    function fijar(fila, v) {
+      const it = ITEMS.find(i => i.fila === fila);
+      if (!it) return;
+      const max = Math.floor(it.stock);
+      let n = Math.floor(Number(v) || 0);
+      if (n > max) { n = max; toast('Solo hay ' + max + ' unidades de ' + it.nombre, 'error'); }
+      if (n < 0) n = 0;
+      if (n) CARRITO[fila] = n; else delete CARRITO[fila];
+      render();
+    }
+
+    function lineasCarrito() {
+      return Object.keys(CARRITO).map(f => {
+        const it = ITEMS.find(i => String(i.fila) === f);
+        return it ? { fila: it.fila, nombre: it.nombre, cantidad: CARRITO[f], precio: it.precio, subtotal: CARRITO[f] * it.precio } : null;
+      }).filter(Boolean);
+    }
+
+    function actualizarCarrito() {
+      const l = lineasCarrito();
+      const unidades = l.reduce((a, x) => a + x.cantidad, 0);
+      const total = l.reduce((a, x) => a + x.subtotal, 0);
+      document.getElementById('cartCount').textContent = l.length + ' componente(s) · ' + unidades + ' unidad(es)';
+      document.getElementById('cartTotal').textContent = soles(total);
+      document.getElementById('btnReservar').disabled = !l.length;
+      document.getElementById('btnVaciar').disabled = !l.length;
+    }
+
+    function vaciar() {
+      if (!confirm('¿Vaciar el carrito?')) return;
+      CARRITO = {};
+      render();
+    }
+
+    function abrirConfirmar() {
+      const l = lineasCarrito();
+      if (!l.length) return;
+      const total = l.reduce((a, x) => a + x.subtotal, 0);
+      document.getElementById('modalContenido').innerHTML = `
+        <h3>Confirmar reserva</h3>
+        <p style="margin:0 0 10px;color:var(--muted);font-size:14px">${esc(USUARIO.nombre)} · Código ${esc(USUARIO.codigo)}</p>
+        <table class="resumen">
+          <tbody>${l.map(x => `<tr><td>${x.cantidad} × ${esc(x.nombre)}</td><td class="num">${soles(x.subtotal)}</td></tr>`).join('')}</tbody>
+          <tfoot><tr><td>Total a pagar al recoger</td><td class="num">${soles(total)}</td></tr></tfoot>
+        </table>
+        <div class="acciones">
+          <button class="btn light" onclick="cerrarModal()">Seguir eligiendo</button>
+          <button class="btn ok" id="btnConfirmar" onclick="reservar()">Confirmar reserva</button>
+        </div>`;
+      document.getElementById('modal').classList.add('show');
+    }
+
+    function cerrarModal() {
+      document.getElementById('modal').classList.remove('show');
+    }
+
+    async function reservar() {
+      const b = document.getElementById('btnConfirmar');
+      b.disabled = true;
+      b.textContent = 'Reservando...';
+      try {
+        const r = await api('reservar', {
+          nombre: USUARIO.nombre,
+          codigo: USUARIO.codigo,
+          items: lineasCarrito().map(x => ({ fila: x.fila, nombre: x.nombre, cantidad: x.cantidad }))
+        });
+        CARRITO = {};
+        document.getElementById('modalContenido').innerHTML = `
+          <h3>✅ ¡Reserva realizada!</h3>
+          <p>Tu número de pedido es <b>${esc(r.id)}</b>.</p>
+          <table class="resumen">
+            <tbody>${r.detalle.map(x => `<tr><td>${x.cantidad} × ${esc(x.nombre)}</td><td class="num">${soles(x.subtotal)}</td></tr>`).join('')}</tbody>
+            <tfoot><tr><td>Total a pagar al recoger</td><td class="num">${soles(r.total)}</td></tr></tfoot>
+          </table>
+          <p style="font-size:13px;color:var(--muted)">Toma captura de esta pantalla. Acércate con tu nombre y código para recoger y pagar tus componentes.</p>
+          <div class="acciones"><button class="btn" onclick="cerrarModal()">Listo</button></div>`;
+        cargarStock();
+      } catch (e) {
+        b.disabled = false;
+        b.textContent = 'Confirmar reserva';
+        toast(e.message, 'error');
+        cargarStock();
+      }
+    }
+  </script>
+</body>
+</html>
